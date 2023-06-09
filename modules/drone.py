@@ -2,18 +2,25 @@ from pymavlink import mavutil
 import time
 from pymavlink.quaternion import QuaternionBase
 import math
-from tqdm import tqdm
+from tqdm import tqdm #Liabray used to monitor the progress of some of the functions
+
 drone = None
-LAND_VELOCITY=0.5
+
 def connect(connection_string='udpin:localhost:14551'):
     global drone
     if drone == None:
         drone =mavutil.mavlink_connection(connection_string)
-    drone.wait_heartbeat() 
+    drone.wait_heartbeat() # Prints heartbeat 
     print("Heartbeat from system (system %u component %u)" % 
       (drone.target_system, drone.target_component))
 
-def return_to_launch():
+def reboot(param):
+    global drone
+    print("Restarting ardupilot.......")
+    drone.reboot_autopilot(hold_in_bootloader=param)
+    time.sleep(1) # Adds a wait time for the autopilot to boot
+
+def set_RTL_mode():
     global drone
     print("Return to launch mode")
     drone.mav.command_long_send(drone.target_system,
@@ -23,9 +30,19 @@ def return_to_launch():
                                      1,
                                      6, # value for RTL mode
                                      0,0,0,0,0)
-    
+def set_guided_mode():
+    global drone 
+    print("Guided mode active")
+    drone.mav.command_long_send(drone.target_system,
+                                     drone.target_component, 
+                                     mavutil.mavlink.MAV_CMD_DO_SET_MODE, 
+                                     0, 
+                                     1,
+                                     4, # value for RTL mode
+                                     0,0,0,0,0)
 def land():
     global drone
+    LAND_VELOCITY=0.5
     drone.mav.command_long_send(drone.target_system,
                                      drone.target_component, 
                                      mavutil.mavlink.MAV_CMD_DO_SET_MODE, 
@@ -61,7 +78,7 @@ def land():
 
                 prev_position = current_position
 
-                if stable_count >= 10 and elapsed_time >= estimated_landing_time :  # Adjust the count as needed
+                if stable_count >= 10:  # Adjust the count as needed
                     pbar.update(100- pbar.n)
                     break
             progress = min(100, int((elapsed_time / estimated_landing_time) * 100))  # Calculate progress based on elapsed time
@@ -72,7 +89,7 @@ def land():
     print("Landing completed successfully.")
 
 
-def set_to_auto():
+def set_auto():
     global drone
     print("Auto mode enabled")
     drone.mav.command_long_send(drone.target_system,
@@ -100,7 +117,7 @@ def is_armed():
             armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
             return armed    
 
-def arm_and_takeoff(aTargetAltitude):
+def arm_and_takeoff(aTargetAltitude=10):
     global drone
     print ("Check if drone is armable")
     # Don't try to arm until autopilot is ready
@@ -126,17 +143,16 @@ def arm_and_takeoff(aTargetAltitude):
 
     c_alt=0 # Current altitude
     with tqdm(total=100, unit='%', desc='Ascending', bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}') as pbar:
-        while c_alt>aTargetAltitude*-0.99:
+        while c_alt>aTargetAltitude*-0.98:
             c_alt= float(drone.recv_match(type='LOCAL_POSITION_NED',blocking=True).z)
-            progress = min(100, int(abs(c_alt/ aTargetAltitude) * 100))  # Calculate progress based on elapsed time
+            progress = min(100, int(abs(c_alt/ aTargetAltitude) * 100))  
             pbar.update(progress - pbar.n)  # Increment the progress bar
             time.sleep(0.1)
         pbar.update(100-pbar.n)
     
     print("Reached target altitude")
-    print("ALtitude: ", abs(c_alt))
+    print("Exact altitude: ", abs(c_alt))
     time.sleep(1) # a little time to hover before executing the next instruction 
-    #  after Vehicle.simple_takeoff will execute immediately).
 
 
 def movement_YAW_command(heading):
@@ -163,22 +179,20 @@ def movement_YAW_command(heading):
         1,          #relative offset 1
         0, 0, 0)    
 
-def movement_attitude(duration, roll,pitch,yaw,thrust=0.5):
+def movement_attitude(roll,pitch,yaw,thrust=0.5):
     global drone
-    start_time = time.time()
-    while time.time() - start_time < duration:
-        drone.mav.set_attitude_target_send(
-            0,                      # Time since boot in milliseconds
-            1,                      # Target system ID
-            1,                      # Target component ID
-            0b00000111,             # Type mask: Ignore all body rate fields
-            QuaternionBase([math.radians(angle) for angle in (roll, pitch, yaw)]), 
-            0,                      # Target body roll rate (not used)
-            0,                      # Target body pitch rate (not used)
-            0,                      # Target body yaw rate (no change in yaw angle)
-            thrust                  # Thrust value for backward movement (positive value)
-        )
-        time.sleep(0.1)  # Adjust the time interval between commands if needed
+    drone.mav.set_attitude_target_send(
+        0,                      # Time since boot in milliseconds
+        1,                      # Target system ID
+        1,                      # Target component ID
+        0b00000111,             # Type mask: Ignore all body rate fields
+        QuaternionBase([math.radians(angle) for angle in (roll, pitch, yaw)]), 
+        0,                      # Target body roll rate (not used)
+        0,                      # Target body pitch rate (not used)
+        0,                      # Target body yaw rate (no change in yaw angle)
+        thrust                  # Thrust value for backward movement (positive value)
+    )
+    time.sleep(0.1)  # Adjust the time interval between commands if needed
 
 def movement_vx_vy_command(velx, vely, altitude):
     global drone
